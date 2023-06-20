@@ -53,3 +53,8 @@ class PathListModel(QtCore.QAbstractListModel):
             self.beginMoveRows(QtCore.QModelIndex(), row, row, QtCore.QModelIndex(), row + 2)
             self.paths[row], self.paths[row + 1] = self.paths[row + 1], self.paths[row]
             self.endMoveRows()
+
+    def setPaths(self, paths):
+        self.beginResetModel()
+        self.paths = paths
+        self.endResetModel()

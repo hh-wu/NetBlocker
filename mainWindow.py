@@ -4,7 +4,76 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from pathlib import Path
 
 from PathListModel import PathListModel
-from firwall import FirewallManager
+from firewall import FirewallManager
+import toml
+
+
+class ConfigManager:
+    @staticmethod
+    def import_config(file_path):
+        try:
+            with open(file_path, "r") as file:
+                config = toml.load(file)
+                return config.get("paths", [])
+        except (FileNotFoundError, toml.TomlDecodeError):
+            return []
+
+    @staticmethod
+    def export_config(file_path, paths):
+        config = {"paths": paths}
+        with open(file_path, "w") as file:
+            toml.dump(config, file)
+
+
+class BlockThread(QtCore.QThread):
+    progress_update = QtCore.Signal(float)
+    log_update = QtCore.Signal(str)
+
+    def __init__(self, path_list, extensions):
+        super().__init__()
+        self.path_list = path_list
+        self.extensions = extensions
+        self.firewall_manager = FirewallManager()
+
+    def run(self):
+        self.process_files(self.path_list, self.extensions, "添加禁止联网程序：",
+                           self.firewall_manager.block_internet)
+
+    def process_files(self, path_list, extensions, log_prefix,
+                      firewall_action):
+        blocked_paths = []
+        total_files = 0
+        processed_files = 0
+
+        for path in path_list:
+            path_obj = Path(path)
+            for file_path in path_obj.glob("**/*"):
+                if file_path.suffix.lower() in extensions and file_path.is_file():
+                    total_files += 1
+                    blocked_paths.append(file_path)
+        for block_file_path in blocked_paths:
+            # 更新进度和日志
+            processed_files += 1
+            progress_percentage = processed_files / total_files * 100
+            self.progress_update.emit(progress_percentage)
+
+            remaining_files = total_files - processed_files
+            remaining_time = remaining_files * 0.5  # 假设每个文件处理时间为0.5秒
+            remaining_time = round(remaining_time, 1)
+
+            log_message = f"{log_prefix}{block_file_path}"
+            self.log_update.emit(log_message)
+
+            firewall_action(block_file_path)
+
+        self.progress_update.emit(100)
+        self.log_update.emit(f"{log_prefix[:-1]}操作完成")
+
+
+class UnblockThread(BlockThread):
+    def run(self):
+        self.process_files(self.path_list, self.extensions, "取消禁止联网程序：",
+                           self.firewall_manager.unblock_internet)
 
 
 class MainWindow(QtWidgets.QMainWindow):
@@ -12,7 +81,7 @@ class MainWindow(QtWidgets.QMainWindow):
         super().__init__()
 
         self.setWindowTitle("断网卫士")
-        self.resize(800, 400)
+        self.setFixedSize(800, 400)
         self.center_on_screen()
 
         self.path_list = []
@@ -26,42 +95,65 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.path_list_view.doubleClicked.connect(self.edit_path)
 
-        self.new_button = QtWidgets.QPushButton("新建", self)
+        self.new_button = QtWidgets.QPushButton("添加文件夹", self)
         self.new_button.setGeometry(300, 20, 80, 30)
         self.new_button.clicked.connect(self.new_path)
 
-        self.edit_button = QtWidgets.QPushButton("编辑", self)
-        self.edit_button.setGeometry(300, 60, 80, 30)
-        self.edit_button.clicked.connect(self.edit_selected_path)
-
-        self.browse_button = QtWidgets.QPushButton("浏览", self)
-        self.browse_button.setGeometry(300, 100, 80, 30)
-        self.browse_button.clicked.connect(self.browse_selected_path)
-
         self.delete_button = QtWidgets.QPushButton("删除", self)
-        self.delete_button.setGeometry(300, 140, 80, 30)
+        self.delete_button.setGeometry(300, 60, 80, 30)
         self.delete_button.clicked.connect(self.delete_selected_path)
 
         self.move_up_button = QtWidgets.QPushButton("上移", self)
-        self.move_up_button.setGeometry(300, 180, 80, 30)
+        self.move_up_button.setGeometry(300, 100, 80, 30)
         self.move_up_button.clicked.connect(self.move_selected_path_up)
 
         self.move_down_button = QtWidgets.QPushButton("下移", self)
-        self.move_down_button.setGeometry(300, 220, 80, 30)
+        self.move_down_button.setGeometry(300, 140, 80, 30)
         self.move_down_button.clicked.connect(self.move_selected_path_down)
 
-        self.group_box = QtWidgets.QGroupBox("阻止操作", self)
+        self.import_button = QtWidgets.QPushButton("导入配置", self)
+        self.import_button.setGeometry(300, 180, 80, 30)
+        self.import_button.clicked.connect(self.import_config)
+
+        self.export_button = QtWidgets.QPushButton("导出配置", self)
+        self.export_button.setGeometry(300, 220, 80, 30)
+        self.export_button.clicked.connect(self.export_config)
+
+        self.group_box = QtWidgets.QGroupBox("阻止联网", self)
         self.group_box.setGeometry(400, 20, 350, 360)
 
         self.block_all_button = QtWidgets.QPushButton("阻止所有",
                                                       self.group_box)
         self.block_all_button.setGeometry(40, 60, 100, 30)
-        self.block_all_button.clicked.connect(self.block_all)
+        self.block_all_button.clicked.connect(self.start_block_thread)
 
         self.unblock_all_button = QtWidgets.QPushButton("取消阻止",
                                                         self.group_box)
         self.unblock_all_button.setGeometry(200, 60, 100, 30)
-        self.unblock_all_button.clicked.connect(self.unblock_all)
+        self.unblock_all_button.clicked.connect(self.start_unblock_thread)
+
+        self.progress_label = QtWidgets.QLabel(self.group_box)
+        self.progress_label.setGeometry(40, 100, 200, 30)
+        self.progress_label.setText("进度：")
+        self.progress_label.setAlignment(
+            QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+
+        self.progress_bar = QtWidgets.QProgressBar(self.group_box)
+        self.progress_bar.setGeometry(40, 140, 280, 30)
+        self.progress_bar.setValue(0)
+
+        self.log_label = QtWidgets.QLabel(self.group_box)
+        self.log_label.setGeometry(40, 180, 200, 30)
+        self.log_label.setText("日志：")
+        self.log_label.setAlignment(
+            QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+
+        self.log_text_edit = QtWidgets.QTextEdit(self.group_box)
+        self.log_text_edit.setGeometry(40, 220, 280, 100)
+        self.log_text_edit.setReadOnly(True)
+
+        self.block_thread = None
+        self.unblock_thread = None
 
     def center_on_screen(self):
         screen_geometry = QtWidgets.QApplication.primaryScreen().availableGeometry()
@@ -78,6 +170,31 @@ class MainWindow(QtWidgets.QMainWindow):
                     self.path_list = config.get("paths", [])
                 except json.JSONDecodeError:
                     pass
+
+    def import_config(self):
+        dialog = QtWidgets.QFileDialog(self)
+        dialog.setFileMode(QtWidgets.QFileDialog.ExistingFile)
+        dialog.setNameFilter("TOML 文件 (*.toml)")
+
+        if dialog.exec_():
+            selected_file = dialog.selectedFiles()[0]
+            with open(selected_file, "r") as file:
+                try:
+                    config = toml.load(file)
+                    self.path_list = config.get("paths", [])
+                    self.path_list_model.setPaths(self.path_list)
+                except json.JSONDecodeError:
+                    pass
+
+    def export_config(self):
+        dialog = QtWidgets.QFileDialog(self)
+        dialog.setFileMode(QtWidgets.QFileDialog.AnyFile)
+        dialog.setNameFilter("TOML 文件 (*.toml)")
+        if dialog.exec_():
+            selected_file = dialog.selectedFiles()[0]
+            config = {"paths": self.path_list}
+            with Path(f'{selected_file}.toml').open('w', encoding='utf8') as f:
+                toml.dump(config, f)
 
     def save_paths_to_config(self):
         config = {"paths": self.path_list}
@@ -137,30 +254,56 @@ class MainWindow(QtWidgets.QMainWindow):
     def edit_path(self, index):
         self.path_list_view.edit(index)
 
-    def block_all(self):
-        extensions = [".exe", ".dll"]  # 特定文件扩展名列表
-        blocked_paths = []
+    def start_block_thread(self):
+        if self.block_thread is None or not self.block_thread.isRunning():
+            extensions, ok = QtWidgets.QInputDialog.getText(
+                self, "阻止操作",
+                "输入要阻止的文件扩展名类型（用逗号分隔），默认为exe。\n"
+                "例如输入“exe,dll,bat”,如果仅需要exe，直接输入exe即可:",
+                text='exe')
+            if ok:
+                extensions = [f'.{ext.strip().lower()}' for ext in
+                              extensions.split(",")]
 
-        for path in self.path_list:
-            path_obj = Path(path)
-            for file_path in path_obj.glob("**/*"):
-                if file_path.suffix.lower() in extensions and file_path.is_file():
-                    blocked_paths.append(file_path)
+                print(extensions)
+                self.block_thread = BlockThread(self.path_list, extensions)
+                self.block_thread.progress_update.connect(
+                    self.update_block_progress)
+                self.block_thread.log_update.connect(self.update_log)
+                self.block_thread.start()
 
-        firewall_manager = FirewallManager()
-        for file_path in blocked_paths:
-            firewall_manager.block_internet(file_path)
+    def start_unblock_thread(self):
+        if self.unblock_thread is None or not self.unblock_thread.isRunning():
+            extensions, ok = QtWidgets.QInputDialog.getText(
+                self, "取消阻止操作",
+                "输入要取消阻止的文件扩展名类型（用逗号分隔），默认为exe。\n"
+                "例如输入“exe,dll,bat”,如果仅需要exe，直接输入exe即可:",
+                text='exe')
+            if ok:
+                extensions = [f'.{ext.strip().lower()}' for ext in
+                              extensions.split(",")]
+                print(extensions)
+                self.unblock_thread = UnblockThread(self.path_list, extensions)
+                self.unblock_thread.progress_update.connect(
+                    self.update_unblock_progress)
+                self.unblock_thread.log_update.connect(self.update_log)
+                self.unblock_thread.start()
 
-    def unblock_all(self):
-        extensions = [".exe", ".dll"]  # 特定文件扩展名列表
-        blocked_paths = []
+    def update_block_progress(self, progress):
+        self.progress_bar.setValue(int(progress))
+        self.progress_label.setText(f"进度：{progress:.2f}%")
 
-        for path in self.path_list:
-            path_obj = Path(path)
-            for file_path in path_obj.glob("**/*"):
-                if file_path.suffix.lower() in extensions and file_path.is_file():
-                    blocked_paths.append(file_path)
+    def update_unblock_progress(self, progress):
+        self.progress_bar.setValue(int(progress))
+        self.progress_label.setText(f"进度：{progress:.2f}%")
 
-        firewall_manager = FirewallManager()
-        for file_path in blocked_paths:
-            firewall_manager.unblock_internet(file_path)
+    def update_log(self, message):
+        log_message = f"{message}"
+        self.log_text_edit.append(log_message)
+
+
+if __name__ == "__main__":
+    app = QtWidgets.QApplication([])
+    main_window = MainWindow()
+    main_window.show()
+    app.exec_()
