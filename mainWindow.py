@@ -36,7 +36,8 @@ class BlockThread(QtCore.QThread):
         self.firewall_manager = FirewallManager()
 
     def run(self):
-        self.process_files(self.path_list, self.extensions, "添加禁止联网程序：",
+        self.process_files(self.path_list, self.extensions,
+                           "添加禁止联网程序：",
                            self.firewall_manager.block_internet)
 
     def process_files(self, path_list, extensions, log_prefix,
@@ -72,7 +73,8 @@ class BlockThread(QtCore.QThread):
 
 class UnblockThread(BlockThread):
     def run(self):
-        self.process_files(self.path_list, self.extensions, "取消禁止联网程序：",
+        self.process_files(self.path_list, self.extensions,
+                           "取消禁止联网程序：",
                            self.firewall_manager.unblock_internet)
 
 
@@ -80,7 +82,9 @@ class MainWindow(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
 
-        self.setWindowTitle("断网卫士")
+        self.setWindowTitle(
+            "断网卫士，阻止文件夹内程序联网的工具，帮助你保护隐私。"
+            "作者：吴会欢(hh.wu@connect.polyu.hk)")
         self.setFixedSize(800, 400)
         self.center_on_screen()
 
